@@ -1,0 +1,34 @@
+# Python byte-code
+__pycache__/
+*.py[cod]
+*$py.class
+
+# pytest
+.pytest_cache/
+.cache/
+
+# Claude Code personal settings
+.claude/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# pyRevit compiled bundles
+*.bundle/
+*.pyc
+
+# OS artefacts
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Distribution / packaging (not used here but safe to exclude)
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
