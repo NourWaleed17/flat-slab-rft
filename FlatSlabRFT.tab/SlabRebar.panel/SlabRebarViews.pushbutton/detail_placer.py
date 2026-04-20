@@ -115,12 +115,17 @@ def _direction_from_mark(mark_value):
     return XYZ(1, 0, 0)
 
 
-def _all_bars_bbox(bars):
-    """Return a combined bounding box (SimpleNamespace with Min/Max XYZ) for a list of bars.
+class _BBox(object):
+    """Minimal bounding box container (IronPython 2.7 has no types.SimpleNamespace)."""
+    __slots__ = ('Min', 'Max')
 
-    Used to place the single bending detail outside the ENTIRE bar zone, not
-    just one element's bbox.
-    """
+    def __init__(self, min_xyz, max_xyz):
+        self.Min = min_xyz
+        self.Max = max_xyz
+
+
+def _all_bars_bbox(bars):
+    """Return a combined _BBox with Min/Max XYZ for a list of bars."""
     min_x = min_y = float('inf')
     max_x = max_y = float('-inf')
     z = 0.0
@@ -141,11 +146,7 @@ def _all_bars_bbox(bars):
         found = True
     if not found:
         return None
-    import types as _t
-    return _t.SimpleNamespace(
-        Min=XYZ(min_x, min_y, z),
-        Max=XYZ(max_x, max_y, z),
-    )
+    return _BBox(XYZ(min_x, min_y, z), XYZ(max_x, max_y, z))
 
 
 def _detail_origin_from_curves(curves, rebar_elem):
@@ -493,11 +494,20 @@ def place_all_details(doc, views_dict, tag_family_symbol):
         tag_family_symbol.Activate()
         doc.Regenerate()
 
+    # Performance fix C: ONE doc-scoped collector for all rebar, grouped by mark.
+    # Replaces N expensive view-scoped collectors (one per mark).
+    wanted_marks = set(views_dict.keys())
+    bars_by_mark = {}
+    for rb in FilteredElementCollector(doc).OfClass(Rebar):
+        mark = _get_mark(rb)
+        if mark in wanted_marks:
+            bars_by_mark.setdefault(mark, []).append(rb)
+
     skipped = []
     for mark_value, view in views_dict.items():
         print('[detail_placer] Processing mark: {!r}'.format(mark_value))
 
-        all_bars = _get_all_bars(doc, mark_value, view=view)
+        all_bars = bars_by_mark.get(mark_value, [])
         if not all_bars:
             print('[detail_placer]   No rebar in view — skipping.')
             skipped.append(mark_value)
