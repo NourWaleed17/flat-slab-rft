@@ -356,11 +356,15 @@ def _make_circle_loop(center, radius):
     return loop
 
 
-def place_donut(doc, view, center, outer_r):
-    """Place a solid filled circle at center."""
+def place_donut(doc, view, center, outer_r, filled_region_type=None):
+    """Place a solid filled circle at center.
+
+    filled_region_type: pre-fetched FilledRegionType to avoid a collector
+                        scan on every call; falls back to a fresh scan if None.
+    """
     from Autodesk.Revit.DB import FilledRegion, FilledRegionType
     try:
-        frt = FilteredElementCollector(doc).OfClass(FilledRegionType).FirstElement()
+        frt = filled_region_type or FilteredElementCollector(doc).OfClass(FilledRegionType).FirstElement()
         if frt is None:
             return None
         outer_loop = _make_circle_loop(center, outer_r)
@@ -409,8 +413,8 @@ def _zone_from_combined_bbox(combined_bb, dist_axis):
     """Compute zone extent tuple from a pre-built combined bounding box.
 
     Returns (zone_min, zone_max, perp, z, axis, 1) or None if span is zero.
-    'perp' is placed at the 1/4 point of the bar-length axis so the dimension
-    sits away from the slab edge rather than dead-centre.
+    'perp' is placed at the 1/4 point of the bar-length axis so annotations
+    sit away from the slab edge rather than dead-centre.
     """
     if combined_bb is None:
         return None
@@ -431,17 +435,59 @@ def _zone_from_combined_bbox(combined_bb, dist_axis):
         return zone_min, zone_max, perp, z, 'X', 1
 
 
-def place_all_details(doc, views_dict, tag_family_symbol):
-    """Place ONE bending detail, ONE dimension, ONE donut, and ONE tag per mark/view.
+def _rebar_qty(bar):
+    """Return the number of bars in a rebar element (1 for individual bars)."""
+    try:
+        p = bar.get_Parameter(BuiltInParameter.REBAR_ELEM_QUANTITY_OF_BARS)
+        if p is not None:
+            return int(p.AsInteger())
+    except Exception:
+        pass
+    return 1
 
-    Previously this looped over every individual rebar element with the same
-    mark, placing hundreds of redundant annotations.  Now it uses the first bar
-    as a representative and the combined bounding box of all bars for the
-    dimension/donut span.
+
+def _annotate_one_set(doc, view, bar, mark_value, detail_type, dist_axis, outer_r,
+                      filled_region_type=None):
+    """Place bending detail + extension line + circle for one rebar set element.
+
+    bar       — representative Rebar element for this set
+    Returns (detail_placed, dim_placed, donut_placed).
     """
+    bd = place_bending_detail(doc, view, bar, mark_value, detail_type,
+                              bar_index=0, move_vector=None)
+
+    zone = _get_rebar_zone_extent(bar, dist_axis)
+    dim = dn = None
+    if zone is not None:
+        zone_min, zone_max, perp, z_dim, axis, _ = zone
+        span = zone_max - zone_min
+        dim = place_distribution_dimension(doc, view, bar, zone)
+        quarter = zone_min + span / 4.0
+        center  = XYZ(perp, quarter, z_dim) if axis == 'Y' else XYZ(quarter, perp, z_dim)
+        dn = place_donut(doc, view, center, outer_r, filled_region_type=filled_region_type)
+
+    return bd is not None, dim is not None, dn is not None
+
+
+def place_all_details(doc, views_dict, tag_family_symbol):
+    """Place bending detail + extension line + circle per rebar set in each view.
+
+    Strategy:
+    - Rebar SET elements (REBAR_ELEM_QUANTITY_OF_BARS > 1): one annotation each.
+      These are the uniform-distribution groups created by SetLayoutAsNumberWithSpacing.
+    - Individual bar elements (qty = 1): all individual bars sharing a mark are
+      treated as one logical group; they receive a single combined annotation
+      using the bounding box of the whole group.
+    - ONE rebar tag placed on the first/representative bar per mark.
+    """
+    from Autodesk.Revit.DB import FilledRegionType
+
     detail_type = _get_rebar_bending_detail_type(doc)
     if detail_type is None:
-        print('[detail_placer] Warning: no RebarBendingDetailType found — bending details skipped.')
+        print('[detail_placer] Warning: no RebarBendingDetailType — bending details skipped.')
+
+    # Cache FilledRegionType once — avoids a collector scan per donut call.
+    frt_cache = FilteredElementCollector(doc).OfClass(FilledRegionType).FirstElement()
 
     if tag_family_symbol is not None and not tag_family_symbol.IsActive:
         tag_family_symbol.Activate()
@@ -461,39 +507,63 @@ def place_all_details(doc, views_dict, tag_family_symbol):
 
         dist_axis  = 'Y' if mark_value in X_MARKS else 'X'
         view_scale = getattr(view, 'Scale', 50)
-        outer_r    = 1.0 / 304.8 * view_scale   # 1 mm on paper
+        outer_r    = 1.0 / 304.8 * view_scale   # 1 mm on paper in model units
 
-        rep_bar = all_bars[0]
+        # ── Split into rebar SETs and individual bars ─────────────────────
+        rebar_sets      = [b for b in all_bars if _rebar_qty(b) > 1]
+        individual_bars = [b for b in all_bars if _rebar_qty(b) == 1]
 
-        # ── ONE bending detail on the representative bar ──────────────────
-        bd = place_bending_detail(doc, view, rep_bar, mark_value, detail_type,
-                                  bar_index=0, move_vector=None)
-        print('[detail_placer]   Detail: {}'.format('placed' if bd else 'FAILED'))
+        total_details = total_dims = total_donuts = total_failed = 0
 
-        # ── ONE dimension + donut spanning ALL bars ────────────────────────
-        combined_bb  = _all_bars_bbox(all_bars)
-        zone_extent  = _zone_from_combined_bbox(combined_bb, dist_axis)
+        # ── One annotation per rebar SET element ──────────────────────────
+        for bar in rebar_sets:
+            bd_ok, dim_ok, dn_ok = _annotate_one_set(
+                doc, view, bar, mark_value, detail_type, dist_axis, outer_r,
+                filled_region_type=frt_cache,
+            )
+            if bd_ok:
+                total_details += 1
+            else:
+                total_failed  += 1
+            if dim_ok:
+                total_dims   += 1
+            if dn_ok:
+                total_donuts += 1
 
-        if zone_extent is not None:
-            zone_min, zone_max, perp, z_dim, axis, _ = zone_extent
-            span = zone_max - zone_min
-            print('[detail_placer]   Zone span: {:.0f} mm'.format(span * 304.8))
+        # ── Individual bars → one combined annotation for the whole group ─
+        if individual_bars:
+            rep_bar     = individual_bars[0]
+            combined_bb = _all_bars_bbox(individual_bars)
+            zone_extent = _zone_from_combined_bbox(combined_bb, dist_axis)
 
-            dim = place_distribution_dimension(doc, view, rep_bar, zone_extent)
-            print('[detail_placer]   Dimension: {}'.format('placed' if dim else 'FAILED'))
+            bd = place_bending_detail(doc, view, rep_bar, mark_value, detail_type,
+                                      bar_index=0, move_vector=None)
+            if bd is not None:
+                total_details += 1
+            else:
+                total_failed  += 1
 
-            quarter = zone_min + span / 4.0
-            donut_center = XYZ(perp, quarter, z_dim) if axis == 'Y' else XYZ(quarter, perp, z_dim)
-            dn = place_donut(doc, view, donut_center, outer_r)
-            print('[detail_placer]   Donut: {}'.format('placed' if dn else 'FAILED'))
-        else:
-            print('[detail_placer]   Dimension/donut: skipped (zero span)')
+            if zone_extent is not None:
+                zone_min, zone_max, perp, z_dim, axis, _ = zone_extent
+                span = zone_max - zone_min
+                dim = place_distribution_dimension(doc, view, rep_bar, zone_extent)
+                if dim is not None:
+                    total_dims += 1
+                quarter = zone_min + span / 4.0
+                center  = XYZ(perp, quarter, z_dim) if axis == 'Y' else XYZ(quarter, perp, z_dim)
+                dn = place_donut(doc, view, center, outer_r, filled_region_type=frt_cache)
+                if dn is not None:
+                    total_donuts += 1
 
-        # ── ONE tag on the representative bar ─────────────────────────────
+        print('[detail_placer]   Sets={} indiv={} | details={} dims={} donuts={} failed={}'.format(
+            len(rebar_sets), len(individual_bars),
+            total_details, total_dims, total_donuts, total_failed))
+
+        # ── ONE tag on the first bar ───────────────────────────────────────
         if tag_family_symbol is None:
             print('[detail_placer]   Tag: skipped (no family selected)')
         else:
-            tag = place_rebar_tag(doc, view, rep_bar, tag_family_symbol)
+            tag = place_rebar_tag(doc, view, all_bars[0], tag_family_symbol)
             print('[detail_placer]   Tag: {}'.format('placed' if tag else 'FAILED'))
 
     return skipped

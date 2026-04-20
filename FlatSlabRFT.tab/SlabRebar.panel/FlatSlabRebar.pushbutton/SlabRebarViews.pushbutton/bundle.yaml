@@ -1,3 +1,0 @@
-name: Slab Rebar Views
-button-text: Slab Rebar\nViews
-tooltip: Automatically generate 10 plan views for flat slab reinforcement detailing. Each view shows one bar set (Bottom X/Y, Top X/Y, Add Bottom X/Y, Add Top X/Y, DP X/Y) using visibility filters, and includes a bending detail, distribution dimension, and rebar tag.

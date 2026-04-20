@@ -588,7 +588,7 @@ _XAML = u"""<Window
               </Border>
               <TextBlock FontFamily="Segoe UI" FontSize="12" VerticalAlignment="Center">
                 <Run Text="Developed by " Foreground="#475569"/>
-                <Run Text="Nour" Foreground="#06B6D4" FontWeight="Bold"/>
+                <Run Text="Nour Waleed" Foreground="#06B6D4" FontWeight="Bold"/>
                 <Run Text="  &#xB7;  FlatSlabRFT Engine" Foreground="#334155"/>
               </TextBlock>
             </StackPanel>
