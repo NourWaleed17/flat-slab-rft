@@ -74,7 +74,7 @@ from geometry import (
 from dp_rebar_placer import (
     generate_dp_bar_rows,
     _z_layer,
-    _strict_min_span,
+    _hard_min_span as _strict_min_span,
     _sum_interval_lengths,
     _polygon_area,
     _is_rect_like_dp,
@@ -252,7 +252,10 @@ class TestZLayer:
 
 
 # ===========================================================================
-# 3. _strict_min_span
+# 3. _hard_min_span  (alias imported as _strict_min_span)
+#    Formula: max(2*dia + 2*cover, 0.08)
+#    This is the absolute floor below which bar creation is skipped.
+#    It is intentionally more permissive than the old _strict_min_span.
 # ===========================================================================
 
 class TestStrictMinSpan:
@@ -260,24 +263,27 @@ class TestStrictMinSpan:
     def test_returns_positive(self):
         assert _strict_min_span(BASE_PARAMS) > 0
 
-    def test_formula_12_dia(self):
+    def test_formula_2dia(self):
+        """Result == 2*dia when cover=0 and 2*dia > floor."""
         params = {'diameter': 1.0, 'cover': 0.0}
         result = _strict_min_span(params)
-        assert result >= 12.0
+        assert result == pytest.approx(2.0)   # max(2*1+0, 0.08) = 2.0
 
-    def test_formula_2_cover_4_dia(self):
+    def test_formula_2cover_plus_2dia(self):
+        """Result == 2*cover + 2*dia when that exceeds the hard floor."""
         params = {'diameter': 0.5, 'cover': 3.0}
         result = _strict_min_span(params)
-        assert result >= 2 * 3.0 + 4 * 0.5  # = 8.0
+        assert result == pytest.approx(7.0)   # max(2*0.5+2*3, 0.08) = 7.0
 
     def test_WRONG_zero_dia_uses_floor(self):
-        """Zero dia → min_span still >= 0.35 (hardcoded floor)."""
+        """Zero dia + zero cover → hard floor 0.08 ft."""
         params = {'diameter': 0.0, 'cover': 0.0}
-        assert _strict_min_span(params) == pytest.approx(0.35)
+        assert _strict_min_span(params) == pytest.approx(0.08)
 
     def test_negative_dia_treated_as_zero(self):
+        """Negative diameter is clamped to 0; result equals hard floor."""
         params = {'diameter': -1.0, 'cover': 0.0}
-        assert _strict_min_span(params) >= 0.35
+        assert _strict_min_span(params) == pytest.approx(0.08)
 
 
 # ===========================================================================

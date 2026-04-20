@@ -65,7 +65,7 @@ import unittest.mock as mock
 from dp_rebar_placer import (
     generate_dp_bar_rows,
     _z_layer,
-    _strict_min_span,
+    _hard_min_span as _strict_min_span,
     _is_rect_like_dp,
     _group_rows_by_intervals,
     _intervals_match,
