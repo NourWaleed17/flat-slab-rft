@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Test/cache artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local assistant/session files
+.claude/
+
+# OS/editor junk
+.DS_Store
+Thumbs.db

@@ -1,0 +1,3 @@
+name: Flat Slab RFT
+button-text: Flat Slab\nRFT
+tooltip: Automatically place reinforcement bars in a flat slab floor element. Handles main slab mesh (top and bottom), drop panel detection and staple bars, shaft/opening detection, bar splitting, and splice logic.
