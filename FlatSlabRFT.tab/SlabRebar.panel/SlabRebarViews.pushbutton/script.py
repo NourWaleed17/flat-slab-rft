@@ -5,7 +5,7 @@ from __future__ import print_function
 from pyrevit import forms, revit
 from Autodesk.Revit.DB import Transaction, TransactionGroup
 
-import ui
+import views_ui as ui
 import view_creator
 import filter_creator
 import detail_placer
