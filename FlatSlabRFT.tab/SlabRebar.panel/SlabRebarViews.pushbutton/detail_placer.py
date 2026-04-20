@@ -405,14 +405,44 @@ def place_rebar_tag(doc, view, rebar_element, tag_family_symbol):
 # Main entry
 # ---------------------------------------------------------------------------
 
+def _zone_from_combined_bbox(combined_bb, dist_axis):
+    """Compute zone extent tuple from a pre-built combined bounding box.
+
+    Returns (zone_min, zone_max, perp, z, axis, 1) or None if span is zero.
+    'perp' is placed at the 1/4 point of the bar-length axis so the dimension
+    sits away from the slab edge rather than dead-centre.
+    """
+    if combined_bb is None:
+        return None
+    z = (combined_bb.Min.Z + combined_bb.Max.Z) / 2.0
+    if dist_axis == 'Y':
+        zone_min = combined_bb.Min.Y
+        zone_max = combined_bb.Max.Y
+        if zone_max - zone_min < 1e-6:
+            return None
+        perp = combined_bb.Min.X + (combined_bb.Max.X - combined_bb.Min.X) / 4.0
+        return zone_min, zone_max, perp, z, 'Y', 1
+    else:
+        zone_min = combined_bb.Min.X
+        zone_max = combined_bb.Max.X
+        if zone_max - zone_min < 1e-6:
+            return None
+        perp = combined_bb.Min.Y + (combined_bb.Max.Y - combined_bb.Min.Y) / 4.0
+        return zone_min, zone_max, perp, z, 'X', 1
+
+
 def place_all_details(doc, views_dict, tag_family_symbol):
-    """Place bending details (one per rebar set element), span annotation, and tag per view."""
-    # Fetch once — reused for every bar across all marks.
+    """Place ONE bending detail, ONE dimension, ONE donut, and ONE tag per mark/view.
+
+    Previously this looped over every individual rebar element with the same
+    mark, placing hundreds of redundant annotations.  Now it uses the first bar
+    as a representative and the combined bounding box of all bars for the
+    dimension/donut span.
+    """
     detail_type = _get_rebar_bending_detail_type(doc)
     if detail_type is None:
-        print('[detail_placer] Warning: no RebarBendingDetailType found — bending details will be skipped.')
+        print('[detail_placer] Warning: no RebarBendingDetailType found — bending details skipped.')
 
-    # Pre-activate tag symbol once to avoid doc.Regenerate() per bar.
     if tag_family_symbol is not None and not tag_family_symbol.IsActive:
         tag_family_symbol.Activate()
         doc.Regenerate()
@@ -421,75 +451,49 @@ def place_all_details(doc, views_dict, tag_family_symbol):
     for mark_value, view in views_dict.items():
         print('[detail_placer] Processing mark: {!r}'.format(mark_value))
 
-        # Collect only bars visible in this specific view so the count matches
-        # what Revit's filter shows (bars on other levels are excluded).
         all_bars = _get_all_bars(doc, mark_value, view=view)
         if not all_bars:
-            print('[detail_placer]   No rebar visible in view for mark {!r} — skipping.'.format(mark_value))
+            print('[detail_placer]   No rebar in view — skipping.')
             skipped.append(mark_value)
             continue
 
-        print('[detail_placer]   Rebar visible in view: {}'.format(len(all_bars)))
+        print('[detail_placer]   Bars found: {}'.format(len(all_bars)))
 
-        dist_axis = 'Y' if mark_value in X_MARKS else 'X'
-        # Donut radii in model space: size on paper × view scale
+        dist_axis  = 'Y' if mark_value in X_MARKS else 'X'
         view_scale = getattr(view, 'Scale', 50)
-        outer_r = 1.0 / 304.8 * view_scale   # 1 mm on paper (solid circle)
-        placed_details = placed_dims = placed_donuts = failed_details = 0
+        outer_r    = 1.0 / 304.8 * view_scale   # 1 mm on paper
 
-        for i, bar in enumerate(all_bars):
-            zone_extent = _get_rebar_zone_extent(bar, dist_axis)
+        rep_bar = all_bars[0]
 
-            if zone_extent is not None:
-                zone_min, zone_max, perp, z_dim, axis, count = zone_extent
-                span = zone_max - zone_min
-                bar_index = count // 4
-                if i == 0:
-                    print('[detail_placer]   [diag] count={} bar_index={} span={:.0f}mm'.format(
-                        count, bar_index, span * 304.8))
-                # Build move vector for rebar sets (span > 0.5 ft ≈ 150 mm).
-                # Align to Bar always snaps to bar 0; MoveElement shifts to 1/4.
-                if span > 0.5:
-                    if axis == 'Y':
-                        move_vec = XYZ(0.0, span / 4.0, 0.0)
-                    else:
-                        move_vec = XYZ(span / 4.0, 0.0, 0.0)
-                else:
-                    move_vec = None  # individual bar — stay at original location
-            else:
-                bar_index = 0
-                move_vec = None
+        # ── ONE bending detail on the representative bar ──────────────────
+        bd = place_bending_detail(doc, view, rep_bar, mark_value, detail_type,
+                                  bar_index=0, move_vector=None)
+        print('[detail_placer]   Detail: {}'.format('placed' if bd else 'FAILED'))
 
-            bd = place_bending_detail(doc, view, bar, mark_value, detail_type, bar_index,
-                                      move_vector=move_vec)
-            if bd is not None:
-                placed_details += 1
-            else:
-                failed_details += 1
+        # ── ONE dimension + donut spanning ALL bars ────────────────────────
+        combined_bb  = _all_bars_bbox(all_bars)
+        zone_extent  = _zone_from_combined_bbox(combined_bb, dist_axis)
 
-            if zone_extent is not None:
-                dim = place_distribution_dimension(doc, view, bar, zone_extent)
-                if dim is not None:
-                    placed_dims += 1
+        if zone_extent is not None:
+            zone_min, zone_max, perp, z_dim, axis, _ = zone_extent
+            span = zone_max - zone_min
+            print('[detail_placer]   Zone span: {:.0f} mm'.format(span * 304.8))
 
-                quarter_coord = zone_min + span / 4.0
-                if axis == 'Y':
-                    donut_center = XYZ(perp, quarter_coord, z_dim)
-                else:
-                    donut_center = XYZ(quarter_coord, perp, z_dim)
-                dn = place_donut(doc, view, donut_center, outer_r)
-                if dn is not None:
-                    placed_donuts += 1
+            dim = place_distribution_dimension(doc, view, rep_bar, zone_extent)
+            print('[detail_placer]   Dimension: {}'.format('placed' if dim else 'FAILED'))
 
-        print('[detail_placer]   Details: {}  failed: {}  dims: {}  donuts: {}'.format(
-            placed_details, failed_details, placed_dims, placed_donuts))
-
-        # Tag on first bar
-        if tag_family_symbol is None:
-            print('[detail_placer]   Tag: skipped (no tag family selected)')
+            quarter = zone_min + span / 4.0
+            donut_center = XYZ(perp, quarter, z_dim) if axis == 'Y' else XYZ(quarter, perp, z_dim)
+            dn = place_donut(doc, view, donut_center, outer_r)
+            print('[detail_placer]   Donut: {}'.format('placed' if dn else 'FAILED'))
         else:
-            tag = place_rebar_tag(doc, view, all_bars[0], tag_family_symbol)
-            print('[detail_placer]   Tag: {}'.format(
-                'placed' if tag is not None else 'FAILED (see warning above)'))
+            print('[detail_placer]   Dimension/donut: skipped (zero span)')
+
+        # ── ONE tag on the representative bar ─────────────────────────────
+        if tag_family_symbol is None:
+            print('[detail_placer]   Tag: skipped (no family selected)')
+        else:
+            tag = place_rebar_tag(doc, view, rep_bar, tag_family_symbol)
+            print('[detail_placer]   Tag: {}'.format('placed' if tag else 'FAILED'))
 
     return skipped
