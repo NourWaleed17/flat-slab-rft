@@ -117,38 +117,6 @@ def _direction_from_mark(mark_value):
     return XYZ(1, 0, 0)
 
 
-class _BBox(object):
-    """Minimal bounding box container (IronPython 2.7 has no types.SimpleNamespace)."""
-    __slots__ = ('Min', 'Max')
-
-    def __init__(self, min_xyz, max_xyz):
-        self.Min = min_xyz
-        self.Max = max_xyz
-
-
-def _all_bars_bbox(bars):
-    """Return a combined _BBox with Min/Max XYZ for a list of bars."""
-    min_x = min_y = float('inf')
-    max_x = max_y = float('-inf')
-    z = 0.0
-    found = False
-    for rb in bars:
-        bb = rb.get_BoundingBox(None)
-        if bb is None:
-            continue
-        if bb.Min.X < min_x:
-            min_x = bb.Min.X
-        if bb.Min.Y < min_y:
-            min_y = bb.Min.Y
-        if bb.Max.X > max_x:
-            max_x = bb.Max.X
-        if bb.Max.Y > max_y:
-            max_y = bb.Max.Y
-        z = (bb.Min.Z + bb.Max.Z) / 2.0
-        found = True
-    if not found:
-        return None
-    return _BBox(XYZ(min_x, min_y, z), XYZ(max_x, max_y, z))
 
 
 def _detail_origin_from_curves(curves, rebar_elem):
@@ -412,31 +380,6 @@ def place_rebar_tag(doc, view, rebar_element, tag_family_symbol):
 # Main entry
 # ---------------------------------------------------------------------------
 
-def _zone_from_combined_bbox(combined_bb, dist_axis):
-    """Compute zone extent tuple from a pre-built combined bounding box.
-
-    Returns (zone_min, zone_max, perp, z, axis, 1) or None if span is zero.
-    'perp' is placed at the 1/4 point of the bar-length axis so annotations
-    sit away from the slab edge rather than dead-centre.
-    """
-    if combined_bb is None:
-        return None
-    z = (combined_bb.Min.Z + combined_bb.Max.Z) / 2.0
-    if dist_axis == 'Y':
-        zone_min = combined_bb.Min.Y
-        zone_max = combined_bb.Max.Y
-        if zone_max - zone_min < 1e-6:
-            return None
-        perp = combined_bb.Min.X + (combined_bb.Max.X - combined_bb.Min.X) / 4.0
-        return zone_min, zone_max, perp, z, 'Y', 1
-    else:
-        zone_min = combined_bb.Min.X
-        zone_max = combined_bb.Max.X
-        if zone_max - zone_min < 1e-6:
-            return None
-        perp = combined_bb.Min.Y + (combined_bb.Max.Y - combined_bb.Min.Y) / 4.0
-        return zone_min, zone_max, perp, z, 'X', 1
-
 
 def _rebar_qty(bar):
     """Return the number of bars in a rebar element (1 for individual bars)."""
@@ -536,57 +479,19 @@ def place_all_details(doc, views_dict, tag_family_symbol):
 
         total_details = total_dims = total_donuts = total_failed = 0
 
-        # ── One annotation per rebar SET element ──────────────────────────
-        for bar in rebar_sets:
-            t_set = time.time()
+        # ── One annotation per rebar element (SET or individual) ─────────────
+        for bar in rebar_sets + individual_bars:
+            t_bar = time.time()
             bd_ok, dim_ok, dn_ok = _annotate_one_set(
                 doc, view, bar, mark_value, detail_type, dist_axis, outer_r,
                 filled_region_type=frt_cache,
             )
-            print('[detail_placer]   set annotation: {:.0f}ms  bd={} dim={} dn={}'.format(
-                (time.time() - t_set) * 1000, bd_ok, dim_ok, dn_ok))
+            print('[detail_placer]   bar(qty={}) annotation: {:.0f}ms  bd={} dim={} dn={}'.format(
+                _rebar_qty(bar), (time.time() - t_bar) * 1000, bd_ok, dim_ok, dn_ok))
             if bd_ok:  total_details += 1
             else:      total_failed  += 1
             if dim_ok: total_dims    += 1
             if dn_ok:  total_donuts  += 1
-
-        # ── Individual bars → one combined annotation ──────────────────────
-        if individual_bars:
-            rep_bar = individual_bars[0]
-
-            t_bbox = time.time()
-            combined_bb = _all_bars_bbox(individual_bars)
-            print('[detail_placer]   _all_bars_bbox ({} bars): {:.0f}ms'.format(
-                len(individual_bars), (time.time() - t_bbox) * 1000))
-
-            zone_extent = _zone_from_combined_bbox(combined_bb, dist_axis)
-
-            t_bd = time.time()
-            bd = place_bending_detail(doc, view, rep_bar, mark_value, detail_type,
-                                      bar_index=0, move_vector=None)
-            print('[detail_placer]   place_bending_detail: {:.0f}ms  ok={}'.format(
-                (time.time() - t_bd) * 1000, bd is not None))
-            if bd is not None: total_details += 1
-            else:              total_failed  += 1
-
-            if zone_extent is not None:
-                zone_min, zone_max, perp, z_dim, axis, _ = zone_extent
-                span = zone_max - zone_min
-
-                t_dim = time.time()
-                dim = place_distribution_dimension(doc, view, rep_bar, zone_extent)
-                print('[detail_placer]   place_distribution_dimension: {:.0f}ms  ok={}'.format(
-                    (time.time() - t_dim) * 1000, dim is not None))
-                if dim is not None: total_dims += 1
-
-                third  = zone_min + span / 3.0
-                center = XYZ(perp, third, z_dim) if axis == 'Y' else XYZ(third, perp, z_dim)
-
-                t_dn = time.time()
-                dn = place_donut(doc, view, center, outer_r, filled_region_type=frt_cache)
-                print('[detail_placer]   place_donut: {:.0f}ms  ok={}'.format(
-                    (time.time() - t_dn) * 1000, dn is not None))
-                if dn is not None: total_donuts += 1
 
         # ── ONE tag on the first bar ───────────────────────────────────────
         if tag_family_symbol is None:
