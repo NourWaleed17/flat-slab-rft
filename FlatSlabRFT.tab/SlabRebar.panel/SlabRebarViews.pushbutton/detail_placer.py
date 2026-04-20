@@ -2,6 +2,8 @@
 """Place bending details, distribution dimensions, and rebar tags."""
 from __future__ import print_function
 
+import time
+
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInParameter,
     Line, XYZ, IndependentTag,
@@ -490,90 +492,112 @@ def place_all_details(doc, views_dict, tag_family_symbol):
     # Cache FilledRegionType once — avoids a collector scan per donut call.
     frt_cache = FilteredElementCollector(doc).OfClass(FilledRegionType).FirstElement()
 
+    t_regen = time.time()
     if tag_family_symbol is not None and not tag_family_symbol.IsActive:
         tag_family_symbol.Activate()
         doc.Regenerate()
+        print('[detail_placer] tag symbol activate+regen: {:.2f}s'.format(time.time() - t_regen))
 
-    # Performance fix C: ONE doc-scoped collector for all rebar, grouped by mark.
-    # Replaces N expensive view-scoped collectors (one per mark).
+    # ONE doc-scoped collector for all rebar, grouped by mark.
+    t_collect = time.time()
     wanted_marks = set(views_dict.keys())
     bars_by_mark = {}
+    total_rebar_scanned = 0
     for rb in FilteredElementCollector(doc).OfClass(Rebar):
+        total_rebar_scanned += 1
         mark = _get_mark(rb)
         if mark in wanted_marks:
             bars_by_mark.setdefault(mark, []).append(rb)
+    print('[detail_placer] rebar collector: scanned={} matched={} marks  {:.2f}s'.format(
+        total_rebar_scanned,
+        sum(len(v) for v in bars_by_mark.values()),
+        time.time() - t_collect,
+    ))
 
     skipped = []
     for mark_value, view in views_dict.items():
-        print('[detail_placer] Processing mark: {!r}'.format(mark_value))
+        t_mark = time.time()
+        print('[detail_placer] --- mark: {!r} ---'.format(mark_value))
 
         all_bars = bars_by_mark.get(mark_value, [])
         if not all_bars:
-            print('[detail_placer]   No rebar in view — skipping.')
+            print('[detail_placer]   No rebar — skipping.')
             skipped.append(mark_value)
             continue
 
-        print('[detail_placer]   Bars found: {}'.format(len(all_bars)))
-
         dist_axis  = 'Y' if mark_value in X_MARKS else 'X'
         view_scale = getattr(view, 'Scale', 50)
-        outer_r    = 1.0 / 304.8 * view_scale   # 1 mm on paper in model units
+        outer_r    = 1.0 / 304.8 * view_scale
 
-        # ── Split into rebar SETs and individual bars ─────────────────────
         rebar_sets      = [b for b in all_bars if _rebar_qty(b) > 1]
         individual_bars = [b for b in all_bars if _rebar_qty(b) == 1]
+        print('[detail_placer]   bars={} sets={} individual={}'.format(
+            len(all_bars), len(rebar_sets), len(individual_bars)))
 
         total_details = total_dims = total_donuts = total_failed = 0
 
         # ── One annotation per rebar SET element ──────────────────────────
         for bar in rebar_sets:
+            t_set = time.time()
             bd_ok, dim_ok, dn_ok = _annotate_one_set(
                 doc, view, bar, mark_value, detail_type, dist_axis, outer_r,
                 filled_region_type=frt_cache,
             )
-            if bd_ok:
-                total_details += 1
-            else:
-                total_failed  += 1
-            if dim_ok:
-                total_dims   += 1
-            if dn_ok:
-                total_donuts += 1
+            print('[detail_placer]   set annotation: {:.0f}ms  bd={} dim={} dn={}'.format(
+                (time.time() - t_set) * 1000, bd_ok, dim_ok, dn_ok))
+            if bd_ok:  total_details += 1
+            else:      total_failed  += 1
+            if dim_ok: total_dims    += 1
+            if dn_ok:  total_donuts  += 1
 
-        # ── Individual bars → one combined annotation for the whole group ─
+        # ── Individual bars → one combined annotation ──────────────────────
         if individual_bars:
-            rep_bar     = individual_bars[0]
+            rep_bar = individual_bars[0]
+
+            t_bbox = time.time()
             combined_bb = _all_bars_bbox(individual_bars)
+            print('[detail_placer]   _all_bars_bbox ({} bars): {:.0f}ms'.format(
+                len(individual_bars), (time.time() - t_bbox) * 1000))
+
             zone_extent = _zone_from_combined_bbox(combined_bb, dist_axis)
 
+            t_bd = time.time()
             bd = place_bending_detail(doc, view, rep_bar, mark_value, detail_type,
                                       bar_index=0, move_vector=None)
-            if bd is not None:
-                total_details += 1
-            else:
-                total_failed  += 1
+            print('[detail_placer]   place_bending_detail: {:.0f}ms  ok={}'.format(
+                (time.time() - t_bd) * 1000, bd is not None))
+            if bd is not None: total_details += 1
+            else:              total_failed  += 1
 
             if zone_extent is not None:
                 zone_min, zone_max, perp, z_dim, axis, _ = zone_extent
                 span = zone_max - zone_min
+
+                t_dim = time.time()
                 dim = place_distribution_dimension(doc, view, rep_bar, zone_extent)
-                if dim is not None:
-                    total_dims += 1
+                print('[detail_placer]   place_distribution_dimension: {:.0f}ms  ok={}'.format(
+                    (time.time() - t_dim) * 1000, dim is not None))
+                if dim is not None: total_dims += 1
+
                 third  = zone_min + span / 3.0
                 center = XYZ(perp, third, z_dim) if axis == 'Y' else XYZ(third, perp, z_dim)
-                dn = place_donut(doc, view, center, outer_r, filled_region_type=frt_cache)
-                if dn is not None:
-                    total_donuts += 1
 
-        print('[detail_placer]   Sets={} indiv={} | details={} dims={} donuts={} failed={}'.format(
-            len(rebar_sets), len(individual_bars),
-            total_details, total_dims, total_donuts, total_failed))
+                t_dn = time.time()
+                dn = place_donut(doc, view, center, outer_r, filled_region_type=frt_cache)
+                print('[detail_placer]   place_donut: {:.0f}ms  ok={}'.format(
+                    (time.time() - t_dn) * 1000, dn is not None))
+                if dn is not None: total_donuts += 1
 
         # ── ONE tag on the first bar ───────────────────────────────────────
         if tag_family_symbol is None:
             print('[detail_placer]   Tag: skipped (no family selected)')
         else:
+            t_tag = time.time()
             tag = place_rebar_tag(doc, view, all_bars[0], tag_family_symbol)
-            print('[detail_placer]   Tag: {}'.format('placed' if tag else 'FAILED'))
+            print('[detail_placer]   place_rebar_tag: {:.0f}ms  ok={}'.format(
+                (time.time() - t_tag) * 1000, tag is not None))
+
+        print('[detail_placer]   mark total {:.2f}s  details={} dims={} donuts={} failed={}'.format(
+            time.time() - t_mark, total_details, total_dims, total_donuts, total_failed))
 
     return skipped

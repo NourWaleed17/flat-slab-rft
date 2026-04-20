@@ -2,6 +2,8 @@
 """Create plan views by duplicating the active view."""
 from __future__ import print_function
 
+import time
+
 from Autodesk.Revit.DB import (
     FilteredElementCollector, ViewPlan,
     ElementId, BuiltInParameter
@@ -96,7 +98,9 @@ def create_all_views(doc, active_view, view_template_id, selected_suffixes=None)
 
     selected_suffixes: list of suffix strings to create. If None or empty, creates all.
     """
+    t0 = time.time()
     _clear_copy_name_conflicts(doc, active_view)
+    print('[view_creator] _clear_copy_name_conflicts: {:.2f}s'.format(time.time() - t0))
 
     try:
         source_name = active_view.Name
@@ -107,20 +111,30 @@ def create_all_views(doc, active_view, view_template_id, selected_suffixes=None)
     if selected_suffixes:
         entries = [e for e in VIEWS if e['suffix'] in selected_suffixes]
 
+    apply_template = (view_template_id is not None
+                      and view_template_id != ElementId.InvalidElementId)
+
     views_dict = {}
     for entry in entries:
+        td = time.time()
         new_view_id = active_view.Duplicate(ViewDuplicateOption.Duplicate)
-        new_view = doc.GetElement(new_view_id)
+        dup_ms = (time.time() - td) * 1000
 
+        new_view = doc.GetElement(new_view_id)
         desired_name = '{} {}'.format(source_name, entry['suffix'])
         _try_set_view_name(new_view, desired_name)
 
-        if (view_template_id is not None
-                and view_template_id != ElementId.InvalidElementId):
+        tt = 0.0
+        if apply_template:
+            ts = time.time()
             try:
                 new_view.ViewTemplateId = view_template_id
             except Exception:
                 pass
+            tt = (time.time() - ts) * 1000
+
+        print('[view_creator]   {:30s}  dup={:.0f}ms  template={:.0f}ms'.format(
+            entry['suffix'], dup_ms, tt))
 
         views_dict[entry['mark']] = new_view
 

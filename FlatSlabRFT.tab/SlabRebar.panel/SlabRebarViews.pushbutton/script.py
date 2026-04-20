@@ -2,6 +2,8 @@
 """Slab Rebar Views — entry point."""
 from __future__ import print_function
 
+import time
+
 from pyrevit import forms, revit
 from Autodesk.Revit.DB import Transaction, TransactionGroup
 
@@ -9,6 +11,12 @@ import views_ui as ui
 import view_creator
 import filter_creator
 import detail_placer
+
+
+def _t(label, t0):
+    elapsed = time.time() - t0
+    print('[TIMING] {:.<40} {:.2f}s'.format(label + ' ', elapsed))
+    return time.time()
 
 
 def main():
@@ -35,12 +43,17 @@ def main():
     tag_family_symbol = inputs['tag_family_symbol']
     selected_suffixes = inputs['selected_suffixes']
 
+    print('[TIMING] === SlabRebarViews run started ===')
+    print('[TIMING] views requested: {}'.format(len(selected_suffixes)))
+    run_start = time.time()
+
     skipped = []
 
     with TransactionGroup(revit.doc, 'Create Slab Rebar Views') as tg:
         tg.Start()
 
-        # 2. Duplicate active view 10 times and rename
+        # 2. Duplicate active view N times and rename
+        t0 = time.time()
         with Transaction(revit.doc, 'Create Plan Views') as t:
             t.Start()
             try:
@@ -56,22 +69,30 @@ def main():
                 )
                 return
             t.Commit()
+        t0 = _t('Stage 1 — create/rename views ({} views)'.format(len(views_dict)), t0)
 
         # 3. Apply mark filters to each view
+        t0 = time.time()
         with Transaction(revit.doc, 'Apply Rebar Filters') as t:
             t.Start()
             filter_creator.apply_all_filters(revit.doc, views_dict)
             t.Commit()
+        t0 = _t('Stage 2 — apply visibility filters', t0)
 
         # 4. Place bending details, dimensions, and tags
+        t0 = time.time()
         with Transaction(revit.doc, 'Place Rebar Details') as t:
             t.Start()
             skipped = detail_placer.place_all_details(
                 revit.doc, views_dict, tag_family_symbol
             )
             t.Commit()
+        _t('Stage 3 — place bending details + dims + tags', t0)
 
         tg.Assimilate()
+
+    total = time.time() - run_start
+    print('[TIMING] === TOTAL {:.2f}s ==='.format(total))
 
     # Report
     msg = '{} rebar view(s) created successfully.'.format(len(views_dict))
