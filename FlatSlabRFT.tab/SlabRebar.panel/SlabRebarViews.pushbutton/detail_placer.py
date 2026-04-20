@@ -463,8 +463,8 @@ def _annotate_one_set(doc, view, bar, mark_value, detail_type, dist_axis, outer_
         zone_min, zone_max, perp, z_dim, axis, _ = zone
         span = zone_max - zone_min
         dim = place_distribution_dimension(doc, view, bar, zone)
-        quarter = zone_min + span / 4.0
-        center  = XYZ(perp, quarter, z_dim) if axis == 'Y' else XYZ(quarter, perp, z_dim)
+        third  = zone_min + span / 3.0
+        center = XYZ(perp, third, z_dim) if axis == 'Y' else XYZ(third, perp, z_dim)
         dn = place_donut(doc, view, center, outer_r, filled_region_type=filled_region_type)
 
     return bd is not None, dim is not None, dn is not None
@@ -559,8 +559,8 @@ def place_all_details(doc, views_dict, tag_family_symbol):
                 dim = place_distribution_dimension(doc, view, rep_bar, zone_extent)
                 if dim is not None:
                     total_dims += 1
-                quarter = zone_min + span / 4.0
-                center  = XYZ(perp, quarter, z_dim) if axis == 'Y' else XYZ(quarter, perp, z_dim)
+                third  = zone_min + span / 3.0
+                center = XYZ(perp, third, z_dim) if axis == 'Y' else XYZ(third, perp, z_dim)
                 dn = place_donut(doc, view, center, outer_r, filled_region_type=frt_cache)
                 if dn is not None:
                     total_donuts += 1
