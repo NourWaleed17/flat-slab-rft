@@ -596,7 +596,7 @@ def main():
             print('[FlatSlabRFT] Placing main mesh rebar ({} segments)...'.format(len(final_segments)))
             placed, failed, rebar_sets = rebar_placer.place_all_slab_bars(
                 revit.doc, floor, final_segments,
-                params['bar_type'], params['hook_type'], params
+                params['bar_type'], params
             )
             print('[FlatSlabRFT] Main mesh done: placed={} failed={} sets={}'.format(
                 placed, failed, rebar_sets))
@@ -622,7 +622,7 @@ def main():
                 continue
             print('[FlatSlabRFT] Placing Add RFT {}mm ({} segments)...'.format(_diam_mm, len(_segs)))
             _p, _f, _s = rebar_placer.place_all_slab_bars(
-                revit.doc, floor, _segs, _bt, params['hook_type'], params
+                revit.doc, floor, _segs, _bt, params
             )
             add_rft_placed += _p
             add_rft_failed += _f

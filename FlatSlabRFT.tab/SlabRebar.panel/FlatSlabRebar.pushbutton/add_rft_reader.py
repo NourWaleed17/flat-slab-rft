@@ -25,6 +25,10 @@ from Autodesk.Revit.DB.Structure import RebarBarType
 
 MM_TO_FEET = 0.00328084
 
+# Set to True to print one line per detail instance during add-rft reading.
+# On a 275-instance run this adds measurable console I/O; keep False in production.
+DEBUG_PER_INSTANCE = False
+
 # Module-level diagnostic collector — populated by read_add_rft_group.
 # Call get_last_group_diag() after each read_add_rft_group call to retrieve it.
 _last_group_diag = []
@@ -289,18 +293,19 @@ def read_detail_item(family_instance):
                 has_hook,
             )
         )
-        try:
-            _inst_id = family_instance.Id.IntegerValue
-        except Exception:
-            _inst_id = '?'
-        print('[add_rft_reader] instance={} active_letters={} has_hook={} '
-              'leg_ft={:.4f}ft return_param={}'.format(
-                  _inst_id,
-                  active_letters,
-                  has_hook,
-                  leg_ft,
-                  _return_param if _return_param else 'None',
-              ))
+        if DEBUG_PER_INSTANCE:
+            try:
+                _inst_id = family_instance.Id.IntegerValue
+            except Exception:
+                _inst_id = '?'
+            print('[add_rft_reader] instance={} active_letters={} has_hook={} '
+                  'leg_ft={:.4f}ft return_param={}'.format(
+                      _inst_id,
+                      active_letters,
+                      has_hook,
+                      leg_ft,
+                      _return_param if _return_param else 'None',
+                  ))
 
         transform = family_instance.GetTransform()
         origin    = transform.Origin

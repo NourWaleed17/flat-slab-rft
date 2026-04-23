@@ -9,7 +9,7 @@ clr.AddReference('WindowsBase')
 
 from pyrevit import forms
 from Autodesk.Revit.DB import FilteredElementCollector, BuiltInParameter, Group
-from Autodesk.Revit.DB.Structure import RebarBarType, RebarHookType
+from Autodesk.Revit.DB.Structure import RebarBarType
 
 from System.Windows.Markup import XamlReader
 from System.Windows import Window, Visibility as WpfVisibility
@@ -496,10 +496,6 @@ _XAML = u"""<Window
                   </Border>
                 </Grid>
 
-                <TextBlock Text="HOOK TYPE" Style="{StaticResource FieldLabel}"/>
-                <ComboBox x:Name="cbHook" Margin="0,0,0,12"
-                          Style="{StaticResource DarkCombo}"/>
-
                 <TextBlock x:Name="lblBarType" Text="BAR TYPE" Style="{StaticResource FieldLabel}"/>
                 <ComboBox x:Name="cbBar"
                           Style="{StaticResource DarkCombo}"/>
@@ -705,14 +701,8 @@ def _parse_stock_lengths(raw, default=None):
 
 def _show_main_dialog(doc, view=None):
     """Show the dark WPF form and return a params dict, or None if cancelled."""
-    hook_types   = list(FilteredElementCollector(doc).OfClass(RebarHookType).ToElements())
     bar_types_all = list(FilteredElementCollector(doc).OfClass(RebarBarType).ToElements())
-
-    if not hook_types:
-        raise Exception('No RebarHookType elements found in document.')
-
-    hook_type_dict = {_type_name(ht): ht for ht in hook_types}
-    bar_type_dict  = {_type_name(bt): bt for bt in bar_types_all}
+    bar_type_dict = {_type_name(bt): bt for bt in bar_types_all}
 
     window = XamlReader.Parse(_XAML)
 
@@ -732,7 +722,6 @@ def _show_main_dialog(doc, view=None):
     tb_splice     = window.FindName('tbSplice')
     tb_ld         = window.FindName('tbLd')
     tb_dp_horiz   = window.FindName('tbDpHoriz')
-    cb_hook       = window.FindName('cbHook')
     lbl_bar_type  = window.FindName('lblBarType')
     cb_bar        = window.FindName('cbBar')
     rb_direct     = window.FindName('rbDirect')
@@ -750,15 +739,6 @@ def _show_main_dialog(doc, view=None):
     btn_cancel    = window.FindName('btnCancel')
     btn_close     = window.FindName('btnClose')
     title_bar     = window.FindName('TitleBar')
-
-    # ── populate hook type combo ───────────────────────────────────────────
-    for name in sorted(hook_type_dict.keys()):
-        item = ComboBoxItem()
-        item.Content = name
-        item.Tag = hook_type_dict[name]
-        cb_hook.Items.Add(item)
-    if cb_hook.Items.Count > 0:
-        cb_hook.SelectedIndex = 0
 
     # ── populate bar type combo (filtered by diameter) ────────────────────
     def _rebuild_bar_combo(diam_mm=None):
@@ -889,14 +869,6 @@ def _show_main_dialog(doc, view=None):
                 return
             stock_lengths = _parse_stock_lengths(str(tb_stock.Text).strip())
 
-        hook_item = cb_hook.SelectedItem
-        hook_type = hook_item.Tag if hook_item is not None else None
-        if hook_type is None and cb_hook.Items.Count > 0:
-            hook_type = cb_hook.Items[0].Tag
-        if hook_type is None:
-            forms.alert('No hook type available in this project.', title='Input Error')
-            return
-
         bar_type = None
         if not is_add_rft:
             bar_item = cb_bar.SelectedItem
@@ -972,7 +944,6 @@ def _show_main_dialog(doc, view=None):
             'ld_multiplier':          ld_mult,
             'ld':                     ld_ft,
             'dp_horizontal_leg':      dp_horiz_ft,
-            'hook_type':              hook_type,
             'bar_type':               bar_type,
             'run_mode':               run_mode,
             'preview_max_lines':      preview_max_lines,

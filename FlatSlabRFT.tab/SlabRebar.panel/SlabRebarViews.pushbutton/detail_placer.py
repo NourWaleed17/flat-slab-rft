@@ -399,18 +399,28 @@ def _annotate_one_set(doc, view, bar, mark_value, detail_type, dist_axis, outer_
     bar       — representative Rebar element for this set
     Returns (detail_placed, dim_placed, donut_placed).
     """
-    bd = place_bending_detail(doc, view, bar, mark_value, detail_type,
-                              bar_index=0, move_vector=None)
-
+    # Compute zone first so the deterministic move_vector is known before
+    # the bending detail is placed.  AlignToBar always anchors to bar 0 at
+    # zone_min; sliding by span/3 moves the detail to the donut position.
     zone = _get_rebar_zone_extent(bar, dist_axis)
+    donut_center = None
+    move_vec     = None
+    if zone is not None:
+        zone_min, zone_max, perp, z_dim, axis, count = zone
+        span  = zone_max - zone_min
+        third = zone_min + span / 3.0
+        donut_center = XYZ(perp, third, z_dim) if axis == 'Y' else XYZ(third, perp, z_dim)
+        if span > 1e-6:
+            move_vec = XYZ(0.0, span / 3.0, 0.0) if axis == 'Y' else XYZ(span / 3.0, 0.0, 0.0)
+
+    bd = place_bending_detail(doc, view, bar, mark_value, detail_type,
+                              bar_index=0, move_vector=move_vec)
+
     dim = dn = None
     if zone is not None:
-        zone_min, zone_max, perp, z_dim, axis, _ = zone
-        span = zone_max - zone_min
         dim = place_distribution_dimension(doc, view, bar, zone)
-        third  = zone_min + span / 3.0
-        center = XYZ(perp, third, z_dim) if axis == 'Y' else XYZ(third, perp, z_dim)
-        dn = place_donut(doc, view, center, outer_r, filled_region_type=filled_region_type)
+        dn  = place_donut(doc, view, donut_center, outer_r,
+                          filled_region_type=filled_region_type)
 
     return bd is not None, dim is not None, dn is not None
 

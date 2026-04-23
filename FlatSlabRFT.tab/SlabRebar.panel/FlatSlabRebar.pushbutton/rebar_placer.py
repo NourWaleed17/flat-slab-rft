@@ -262,7 +262,7 @@ def _set_rebar_mark(rebar, segment, params):
     pass
 
 
-def place_segment(doc, floor, segment, bar_type, hook_type, layer_z, params):
+def place_segment(doc, floor, segment, bar_type, layer_z, params):
     """Place a single straight rebar segment.
 
     Returns the created Rebar element, or None on failure.
@@ -515,7 +515,7 @@ def _split_contiguous_blocks(group, expected_spacing, tol):
 _BATCH_SIZE = 200   # groups per transaction commit — keeps each commit fast
 
 
-def _place_blocks(doc, floor, blocks, bar_type, hook_type, params,
+def _place_blocks(doc, floor, blocks, bar_type, params,
                   phase_spacing, group_spacing_tol, spacing_input, mark_queue,
                   comment_queue=None):
     """Place a list of blocks (each block = list of segments).
@@ -541,12 +541,12 @@ def _place_blocks(doc, floor, blocks, bar_type, hook_type, params,
     for block in blocks:
         base_seg = block[0]
         base_rebar = place_segment(
-            doc, floor, base_seg, bar_type, hook_type, base_seg['z'], params
+            doc, floor, base_seg, bar_type, base_seg['z'], params
         )
         if base_rebar is None:
             failed += 1
             for seg in block[1:]:
-                rb = place_segment(doc, floor, seg, bar_type, hook_type, seg['z'], params)
+                rb = place_segment(doc, floor, seg, bar_type, seg['z'], params)
                 if rb is not None:
                     placed += 1
                     mark_queue.append((rb.Id, _compute_mark_text(seg, params)))
@@ -590,7 +590,7 @@ def _place_blocks(doc, floor, blocks, bar_type, hook_type, params,
                     pass
 
         for seg in block[1:]:
-            rb = place_segment(doc, floor, seg, bar_type, hook_type, seg['z'], params)
+            rb = place_segment(doc, floor, seg, bar_type, seg['z'], params)
             if rb is not None:
                 placed += 1
                 mark_queue.append((rb.Id, _compute_mark_text(seg, params)))
@@ -602,7 +602,7 @@ def _place_blocks(doc, floor, blocks, bar_type, hook_type, params,
     return placed, failed, set_count
 
 
-def place_all_slab_bars(doc, floor, all_segments, bar_type, hook_type, params):
+def place_all_slab_bars(doc, floor, all_segments, bar_type, params):
     """Place bars as slice-based rebar sets, committed in batches.
 
     Each batch of _BATCH_SIZE groups is placed in its own transaction so that
@@ -681,7 +681,7 @@ def place_all_slab_bars(doc, floor, all_segments, bar_type, hook_type, params):
         try:
             for block, phase_spacing, group_spacing_tol in batch:
                 p, f, s = _place_blocks(
-                    doc, floor, [block], bar_type, hook_type, params,
+                    doc, floor, [block], bar_type, params,
                     phase_spacing, group_spacing_tol, spacing_input, mark_queue,
                     comment_queue=comment_queue,
                 )

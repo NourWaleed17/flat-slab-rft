@@ -11,6 +11,9 @@ from Autodesk.Revit.DB import (Line, XYZ, Curve, Transaction, FailureHandlingOpt
                                FailureSeverity, TransactionStatus)
 from Autodesk.Revit.DB.Structure import Rebar, RebarStyle, RebarHookOrientation
 from geometry import get_obstacle_intervals
+import time
+
+DEBUG_PER_BAR = False   # set True to re-enable per-bar diagnostic prints
 
 ROW_EPS = 0.002  # feet (~0.6 mm), used to avoid edge-coincident scanline ambiguity
 
@@ -107,16 +110,17 @@ def _z_layer(dp_data, params, base_z):
     v_leg = max(0.0, thickness - 2.0 * cover)
     z_top = min(dp_top_z - cover, z_bot + v_leg)
 
-    print('[DP z_layer] dp_bottom_z={:.4f}ft ({:.0f}mm)  dp_top_z={:.4f}ft ({:.0f}mm)  '
-          'thickness={:.4f}ft ({:.0f}mm)  cover={:.4f}ft ({:.0f}mm)  '
-          'v_leg={:.4f}ft ({:.0f}mm)  z_bot={:.4f}ft  z_top={:.4f}ft  delta={:.4f}ft ({:.0f}mm)'.format(
-        dp_bottom_z, dp_bottom_z * 304.8,
-        dp_top_z, dp_top_z * 304.8,
-        thickness, thickness * 304.8,
-        cover, cover * 304.8,
-        v_leg, v_leg * 304.8,
-        z_bot, z_top, z_top - z_bot, (z_top - z_bot) * 304.8,
-    ))
+    if DEBUG_PER_BAR:
+        print('[DP z_layer] dp_bottom_z={:.4f}ft ({:.0f}mm)  dp_top_z={:.4f}ft ({:.0f}mm)  '
+              'thickness={:.4f}ft ({:.0f}mm)  cover={:.4f}ft ({:.0f}mm)  '
+              'v_leg={:.4f}ft ({:.0f}mm)  z_bot={:.4f}ft  z_top={:.4f}ft  delta={:.4f}ft ({:.0f}mm)'.format(
+            dp_bottom_z, dp_bottom_z * 304.8,
+            dp_top_z, dp_top_z * 304.8,
+            thickness, thickness * 304.8,
+            cover, cover * 304.8,
+            v_leg, v_leg * 304.8,
+            z_bot, z_top, z_top - z_bot, (z_top - z_bot) * 304.8,
+        ))
 
     if z_top <= z_bot + 1e-6:
         print('[DP z_layer] REJECTED: z_top <= z_bot, cannot place staple')
@@ -531,6 +535,7 @@ def apply_dp_mark_queue(doc, mark_queue):
         except Exception:
             pass
 
+    print('[MEASURE] dp_mark_retry_needed  pass2_count={}'.format(len(needs_retry)))
     if not needs_retry:
         return
 
@@ -582,6 +587,7 @@ def apply_dp_mark_queue(doc, mark_queue):
                     final_retry.append((eid, mark_text))
         except Exception:
             pass
+    print('[MEASURE] dp_mark_retry_needed  final_count={}'.format(len(final_retry)))
     if not final_retry:
         return
 
@@ -718,10 +724,11 @@ def _place_staple(doc, dp_floor, direction, row_pos, a, b, z_bot, z_top, params,
         normal = XYZ(1, 0, 0)
 
     _direction = direction
-    print('[DP staple] dir={} z_bot={:.3f}ft ({:.0f}mm) z_top={:.3f}ft ({:.0f}mm) '
-          'leg_h={:.3f}ft ({:.0f}mm) n_curves={}'.format(
-        direction, z_bot, z_bot * 304.8, z_top, z_top * 304.8,
-        z_top - z_bot, (z_top - z_bot) * 304.8, curves.Count))
+    if DEBUG_PER_BAR:
+        print('[DP staple] dir={} z_bot={:.3f}ft ({:.0f}mm) z_top={:.3f}ft ({:.0f}mm) '
+              'leg_h={:.3f}ft ({:.0f}mm) n_curves={}'.format(
+            direction, z_bot, z_bot * 304.8, z_top, z_top * 304.8,
+            z_top - z_bot, (z_top - z_bot) * 304.8, curves.Count))
 
     def _create():
         # False, True: don't match existing shape, always create a new one.
