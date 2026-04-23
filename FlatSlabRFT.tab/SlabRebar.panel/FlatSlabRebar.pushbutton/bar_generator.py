@@ -22,10 +22,8 @@ def generate_bar_rows(bbox, spacing, cover, direction):
     rows = []
 
     if direction == 'X':
-        # Inset vary range by cover so bar endpoints (after polygon clipping) are
-        # always cover-distance inside the slab face — prevents "rebar out of host".
-        vary_min = min_x + cover
-        vary_max = max_x - cover
+        vary_min = min_x
+        vary_max = max_x
         y = min_y + cover
         i = 0
         while y <= max_y - cover + 1e-9:
@@ -39,8 +37,8 @@ def generate_bar_rows(bbox, spacing, cover, direction):
             y += spacing
             i += 1
     else:
-        vary_min = min_y + cover
-        vary_max = max_y - cover
+        vary_min = min_y
+        vary_max = max_y
         x = min_x + cover
         i = 0
         while x <= max_x - cover + 1e-9:
