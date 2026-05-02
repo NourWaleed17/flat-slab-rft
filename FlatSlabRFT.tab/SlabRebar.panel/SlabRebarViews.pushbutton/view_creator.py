@@ -21,6 +21,7 @@ VIEWS = [
     {'suffix': 'Add Top Y Bars',   'mark': 'Add Top Y'},
     {'suffix': 'Drop Panel X',     'mark': 'Drop Panel X'},
     {'suffix': 'Drop Panel Y',     'mark': 'Drop Panel Y'},
+    {'suffix': 'Void Add Rebar',   'mark': '__VOID_ADD__'},
 ]
 
 

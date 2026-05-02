@@ -45,6 +45,9 @@ class _XYZ:
     def GetLength(self):
         return (self.X**2 + self.Y**2 + self.Z**2) ** 0.5
 
+    def DistanceTo(self, other):
+        return (self - other).GetLength()
+
 
 _db.XYZ = _XYZ
 _db.Line = None
@@ -54,6 +57,8 @@ _db.Reference = None
 _db.BuiltInParameter = _types.SimpleNamespace(
     ALL_MODEL_MARK='MARK',
     REBAR_ELEM_QUANTITY_OF_BARS='REBAR_COUNT',
+    ALL_MODEL_INSTANCE_COMMENTS='COMMENTS',
+    SYMBOL_NAME_PARAM='SYMBOL_NAME',
 )
 
 # TextNote stub — records Create() calls
@@ -527,11 +532,18 @@ class TestPlaceDistributionDimension:
 # ---------------------------------------------------------------------------
 
 class _RebarBendingDetailTypeStub:
-    def __init__(self):
+    def __init__(self, name='Default Bending Detail'):
         self.Id = 'bdt-id-1'
+        self.Name = name
+
+    def get_Parameter(self, bip):
+        if bip == 'SYMBOL_NAME':
+            return _Param(self.Name)
+        return None
 
 
 _bending_detail_calls = []
+_bending_detail_param_sets = []
 
 
 class _RebarBendingDetailInstance:
@@ -541,9 +553,12 @@ class _RebarBendingDetailInstance:
         self._params = {}
 
     def LookupParameter(self, name):
+        detail = self
         class _P:
             IsReadOnly = False
-            def Set(self_, v): pass
+            def Set(self_, v):
+                detail._params[name] = v
+                _bending_detail_param_sets.append((name, v))
         return _P()
 
 
@@ -585,6 +600,7 @@ class TestAllBarsBbox:
 class TestPlaceBendingDetail:
     def setup_method(self):
         _bending_detail_calls.clear()
+        _bending_detail_param_sets.clear()
         _move_element_calls.clear()
         self._bdt = _RebarBendingDetailTypeStub()
         _FEC_REGISTRY[_RebarBendingDetailTypeStub] = [self._bdt]
@@ -658,6 +674,13 @@ class TestPlaceBendingDetail:
         detail_placer.place_bending_detail(doc, view, rb, 'Bottom X', self._bdt)
         assert len(_move_element_calls) == 0
 
+    def test_tag_alignment_follows_rebar_shape_family(self):
+        doc  = _DocStub()
+        view = _ViewStub()
+        rb   = _RebarStub('Bottom X')
+        detail_placer.place_bending_detail(doc, view, rb, 'Bottom X', self._bdt)
+        assert ('Tag Alignment', 0) in _bending_detail_param_sets
+
     def test_move_vector_y_axis_has_zero_x_component(self):
         """X-mark distribution vector moves only in Y direction."""
         doc  = _DocStub()
@@ -684,6 +707,108 @@ class TestPlaceBendingDetail:
         assert len(_move_element_calls) == 1
         v = _move_element_calls[0]['vector']
         assert abs(v.X - 2.0) < 1e-9  # span/4 = 8/4 = 2.0
+        assert abs(v.Y) < 1e-9
+
+
+class TestPlaceAllDetailsVoid:
+    def setup_method(self):
+        _FEC_REGISTRY.clear()
+        _bending_detail_calls.clear()
+        _bending_detail_param_sets.clear()
+        _move_element_calls.clear()
+        _dbs.RebarBendingDetail = _RebarBendingDetailStub
+        self.default_type = _RebarBendingDetailTypeStub('Default Detail')
+        self.void_type = _RebarBendingDetailTypeStub('Bending Detail for void')
+        self.view = _ViewStub()
+
+    def _run_void_details(self, bars, detail_types=None):
+        _FEC_REGISTRY[None] = list(bars)
+        _FEC_REGISTRY[_RebarBendingDetailTypeStub] = detail_types or [
+            self.default_type, self.void_type
+        ]
+        doc = _DocStub()
+        return detail_placer.place_all_details(
+            doc, {detail_placer.VOID_ADD_MARK_KEY: self.view}, None
+        )
+
+    def test_void_view_processes_every_rebar_set(self):
+        bars = [
+            _RebarStub('Void Add RFT', midpoint=_XYZ(0.0, 0.0, 1.0)),
+            _RebarStub('Void Add RFT', midpoint=_XYZ(5.0, 0.0, 1.0)),
+            _RebarStub('Void Add RFT', midpoint=_XYZ(10.0, 0.0, 1.0)),
+            _RebarStub('Void Add RFT', midpoint=_XYZ(0.0, 5.0, 1.0)),
+            _RebarStub('Void Add RFT', midpoint=_XYZ(5.0, 5.0, 1.0)),
+            _RebarStub('Void Add RFT', midpoint=_XYZ(10.0, 5.0, 1.0)),
+        ]
+        skipped = self._run_void_details(bars)
+        assert skipped == []
+        assert len(_bending_detail_calls) == len(bars)
+
+    def test_identical_top_and_bottom_bars_keep_only_top_detail(self):
+        curve_bottom = _CurveStub(_XYZ(0.0, 0.0, 0.2), _XYZ(10.0, 0.0, 0.2))
+        curve_top = _CurveStub(_XYZ(0.0, 0.0, 1.0), _XYZ(10.0, 0.0, 1.0))
+        bars = [
+            _RebarStub('Void Add RFT', midpoint=_XYZ(5.0, 0.0, 0.2), curves=[curve_bottom]),
+            _RebarStub('Void Add RFT', midpoint=_XYZ(5.0, 0.0, 1.0), curves=[curve_top]),
+        ]
+        self._run_void_details(bars)
+        assert len(_bending_detail_calls) == 1
+        assert _bending_detail_calls[0][2] == bars[1].Id
+
+    def test_distinct_top_bars_each_get_details(self):
+        bars = [
+            _RebarStub('Void Add RFT', curves=[
+                _CurveStub(_XYZ(0.0, 0.0, 1.0), _XYZ(10.0, 0.0, 1.0))
+            ]),
+            _RebarStub('Void Add RFT', curves=[
+                _CurveStub(_XYZ(0.0, 5.0, 1.0), _XYZ(10.0, 5.0, 1.0))
+            ]),
+        ]
+        self._run_void_details(bars)
+        assert len(_bending_detail_calls) == 2
+
+    def test_shape_driven_set_gets_one_detail_not_one_per_physical_bar(self):
+        bars = [_RebarStub('Void Add RFT', bar_count=5)]
+        self._run_void_details(bars)
+        assert len(_bending_detail_calls) == 1
+        assert _bending_detail_calls[0][3] == 0
+
+    def test_missing_named_void_type_falls_back_to_default_type(self):
+        bars = [_RebarStub('Void Add RFT')]
+        self._run_void_details(bars, detail_types=[self.default_type])
+        assert len(_bending_detail_calls) == 1
+        assert _bending_detail_calls[0][4] is self.default_type
+
+    def test_named_void_type_is_used_when_available(self):
+        bars = [_RebarStub('Void Add RFT')]
+        self._run_void_details(bars)
+        assert len(_bending_detail_calls) == 1
+        assert _bending_detail_calls[0][4] is self.void_type
+
+    def test_void_horizontal_set_detail_moves_to_set_center(self):
+        curve = _CurveStub(_XYZ(0.0, 0.0, 1.0), _XYZ(10.0, 0.0, 1.0))
+        rb = _RebarStub('Void Add RFT', curves=[curve], bar_count=4)
+        rb.get_BoundingBox = lambda v: _types.SimpleNamespace(
+            Min=_XYZ(0.0, 0.0, 1.0),
+            Max=_XYZ(10.0, 3.0, 1.0),
+        )
+        self._run_void_details([rb])
+        assert len(_move_element_calls) == 1
+        v = _move_element_calls[0]['vector']
+        assert abs(v.X) < 1e-9
+        assert abs(v.Y - 1.5) < 1e-9
+
+    def test_void_vertical_set_detail_moves_to_set_center(self):
+        curve = _CurveStub(_XYZ(0.0, 0.0, 1.0), _XYZ(0.0, 10.0, 1.0))
+        rb = _RebarStub('Void Add RFT', curves=[curve], bar_count=4)
+        rb.get_BoundingBox = lambda v: _types.SimpleNamespace(
+            Min=_XYZ(0.0, 0.0, 1.0),
+            Max=_XYZ(3.0, 10.0, 1.0),
+        )
+        self._run_void_details([rb])
+        assert len(_move_element_calls) == 1
+        v = _move_element_calls[0]['vector']
+        assert abs(v.X - 1.5) < 1e-9
         assert abs(v.Y) < 1e-9
 
 

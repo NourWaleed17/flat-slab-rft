@@ -14,6 +14,8 @@ from Autodesk.Revit.DB.Structure import Rebar, MultiplanarOption
 
 # X bars run along X → distributed along Y axis; Y bars → distributed along X axis
 X_MARKS = {'Bottom X', 'Top X', 'Add Bottom X', 'Add Top X', 'Drop Panel X'}
+VOID_ADD_MARK_KEY   = '__VOID_ADD__'
+VOID_ADD_MARK_VALUE = 'Void Add RFT'
 
 
 def _get_mark(rebar_elem):
@@ -21,6 +23,17 @@ def _get_mark(rebar_elem):
     if param is None:
         return ''
     return param.AsString() or ''
+
+
+def _get_comments(rebar_elem):
+    """Return instance Comments text, or empty string."""
+    try:
+        p = rebar_elem.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
+        if p is not None:
+            return p.AsString() or ''
+    except Exception:
+        pass
+    return ''
 
 
 def get_representative_bar(doc, mark_value):
@@ -80,6 +93,42 @@ def _bar_midpoint(rebar_elem):
     return None
 
 
+def _all_bars_bbox(bars):
+    """Return a combined bounding box-like object for all bars, or None."""
+    min_x = min_y = min_z = None
+    max_x = max_y = max_z = None
+
+    for bar in bars or []:
+        try:
+            bb = bar.get_BoundingBox(None)
+        except Exception:
+            bb = None
+        if bb is None:
+            continue
+
+        if min_x is None:
+            min_x, min_y, min_z = bb.Min.X, bb.Min.Y, bb.Min.Z
+            max_x, max_y, max_z = bb.Max.X, bb.Max.Y, bb.Max.Z
+        else:
+            min_x = min(min_x, bb.Min.X)
+            min_y = min(min_y, bb.Min.Y)
+            min_z = min(min_z, bb.Min.Z)
+            max_x = max(max_x, bb.Max.X)
+            max_y = max(max_y, bb.Max.Y)
+            max_z = max(max_z, bb.Max.Z)
+
+    if min_x is None:
+        return None
+
+    class _CombinedBBox(object):
+        pass
+
+    combined = _CombinedBBox()
+    combined.Min = XYZ(min_x, min_y, min_z)
+    combined.Max = XYZ(max_x, max_y, max_z)
+    return combined
+
+
 def _bar_direction(rebar_elem):
     """Return normalised direction XYZ of the first centerline curve."""
     curves = _bar_centerline_curves(rebar_elem)
@@ -92,6 +141,190 @@ def _bar_direction(rebar_elem):
         except Exception:
             pass
     return XYZ(1, 0, 0)
+
+
+def _curve_signature_xy(rebar_elem):
+    """Return XY-only curve signature used to collapse top/bottom twins."""
+    curves = _bar_centerline_curves(rebar_elem)
+    if not curves:
+        return None
+    try:
+        c = max(curves, key=lambda x: x.Length)
+        p0 = c.GetEndPoint(0)
+        p1 = c.GetEndPoint(1)
+        a = (round(p0.X, 4), round(p0.Y, 4))
+        b = (round(p1.X, 4), round(p1.Y, 4))
+        if b < a:
+            a, b = b, a
+        return (a, b, round(c.Length, 4))
+    except Exception:
+        return None
+
+
+def _bar_mid_z(rebar_elem):
+    """Return representative bar Z for layer selection (higher = top)."""
+    p = _bar_midpoint(rebar_elem)
+    if p is not None:
+        return p.Z
+    try:
+        bb = rebar_elem.get_BoundingBox(None)
+        if bb is not None:
+            return (bb.Min.Z + bb.Max.Z) / 2.0
+    except Exception:
+        pass
+    return 0.0
+
+
+def _dedupe_void_keep_top(bars):
+    """Collapse identical top/bottom void bars and keep only top-layer bars."""
+    chosen = {}
+    fallback = []
+    for bar in bars:
+        sig = _curve_signature_xy(bar)
+        if sig is None:
+            fallback.append(bar)
+            continue
+        z = _bar_mid_z(bar)
+        prev = chosen.get(sig)
+        if prev is None or z > prev[0]:
+            chosen[sig] = (z, bar)
+    return [v[1] for v in chosen.values()] + fallback
+
+
+def _get_rebar_bending_detail_type_by_name(doc, type_name):
+    """Return RebarBendingDetailType by robust name matching, or None."""
+    if not type_name:
+        return None
+    wanted = ''.join(str(type_name).strip().lower().split())
+    try:
+        from Autodesk.Revit.DB.Structure import RebarBendingDetailType
+        for t in FilteredElementCollector(doc).OfClass(RebarBendingDetailType):
+            try:
+                nm = (getattr(t, 'Name', '') or '').strip()
+                if ''.join(nm.lower().split()) == wanted:
+                    return t
+                p = t.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+                pnm = (p.AsString() if p is not None else '') or ''
+                if ''.join(pnm.strip().lower().split()) == wanted:
+                    return t
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _list_rebar_bending_detail_type_names(doc):
+    """Return all available bending detail type names for diagnostics."""
+    names = []
+    try:
+        from Autodesk.Revit.DB.Structure import RebarBendingDetailType
+        for t in FilteredElementCollector(doc).OfClass(RebarBendingDetailType):
+            try:
+                nm = (getattr(t, 'Name', '') or '').strip()
+                if nm:
+                    names.append(nm)
+                    continue
+                p = t.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+                pnm = (p.AsString() if p is not None else '') or ''
+                if pnm:
+                    names.append(pnm.strip())
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return names
+
+
+def _void_group_key(bar):
+    """Group key for void bars to select one tagged representative per set."""
+    curves = _bar_centerline_curves(bar)
+    if not curves:
+        return ('fallback', bar.Id.IntegerValue)
+    try:
+        c = max(curves, key=lambda x: x.Length)
+        p0 = c.GetEndPoint(0)
+        p1 = c.GetEndPoint(1)
+        dx = p1.X - p0.X
+        dy = p1.Y - p0.Y
+        is_diag = (abs(dx) > 1e-4 and abs(dy) > 1e-4)
+        orient = 'diag' if is_diag else 'orth'
+        length = round(c.Length, 4)
+    except Exception:
+        orient = 'unk'
+        length = 0.0
+    try:
+        type_id = bar.GetTypeId().IntegerValue
+    except Exception:
+        type_id = -1
+    comments = (_get_comments(bar) or '').strip().lower()
+    return (type_id, comments, orient, length)
+
+
+def _void_rep_key(bar):
+    """Representative grouping for void detail view (target: up to 4 details).
+
+    Groups by plan category only:
+      Trimmer X, Trimmer Y, Diagonal slope +, Diagonal slope -
+    """
+    curves = _bar_centerline_curves(bar)
+    if not curves:
+        return ('fallback', bar.Id.IntegerValue)
+    try:
+        c = max(curves, key=lambda x: x.Length)
+        p0 = c.GetEndPoint(0)
+        p1 = c.GetEndPoint(1)
+        dx = p1.X - p0.X
+        dy = p1.Y - p0.Y
+    except Exception:
+        return ('fallback', bar.Id.IntegerValue)
+
+    cm = (_get_comments(bar) or '').strip().lower()
+    is_diag = ('diagonal' in cm) or (abs(dx) > 1e-4 and abs(dy) > 1e-4)
+    if is_diag:
+        slope = 'pos' if (dx * dy) >= 0 else 'neg'
+        return ('diag', slope)
+
+    axis = 'X' if abs(dx) >= abs(dy) else 'Y'
+    return ('trim', axis)
+
+
+def _element_id_sort_value(element):
+    """Return a stable sortable id value for Revit elements and test stubs."""
+    try:
+        return (0, int(element.Id.IntegerValue))
+    except Exception:
+        pass
+    try:
+        return (0, int(element.Id))
+    except Exception:
+        pass
+    return (1, str(getattr(element, 'Id', '')))
+
+
+def _void_detail_sort_key(bar):
+    """Sort void bars by model location, then by id for repeatable output."""
+    try:
+        bb = bar.get_BoundingBox(None)
+    except Exception:
+        bb = None
+
+    if bb is not None:
+        return (
+            round(bb.Min.X, 4), round(bb.Min.Y, 4), round(bb.Min.Z, 4),
+            round(bb.Max.X, 4), round(bb.Max.Y, 4), round(bb.Max.Z, 4),
+            _element_id_sort_value(bar),
+        )
+
+    p = _bar_midpoint(bar)
+    if p is not None:
+        return (
+            round(p.X, 4), round(p.Y, 4), round(p.Z, 4),
+            round(p.X, 4), round(p.Y, 4), round(p.Z, 4),
+            _element_id_sort_value(bar),
+        )
+
+    return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, _element_id_sort_value(bar))
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +368,55 @@ def _detail_origin_from_curves(curves, rebar_elem):
             (p0.Z + p1.Z) / 2.0,
         )
     return _bar_midpoint(rebar_elem)
+
+
+def _void_detail_center_move_vector(rebar_elem):
+    """Return a move vector that centers a void detail over its rebar set."""
+    if _rebar_qty(rebar_elem) <= 1:
+        return None
+
+    curves = _bar_centerline_curves(rebar_elem)
+    if not curves:
+        return None
+
+    try:
+        bb = rebar_elem.get_BoundingBox(None)
+    except Exception:
+        bb = None
+    if bb is None:
+        return None
+
+    try:
+        c = max(curves, key=lambda x: x.Length)
+        p0 = c.GetEndPoint(0)
+        p1 = c.GetEndPoint(1)
+        origin = XYZ(
+            (p0.X + p1.X) / 2.0,
+            (p0.Y + p1.Y) / 2.0,
+            (p0.Z + p1.Z) / 2.0,
+        )
+        center = XYZ(
+            (bb.Min.X + bb.Max.X) / 2.0,
+            (bb.Min.Y + bb.Max.Y) / 2.0,
+            (bb.Min.Z + bb.Max.Z) / 2.0,
+        )
+        dx = p1.X - p0.X
+        dy = p1.Y - p0.Y
+
+        # Orthogonal trimmers move only across the set rows; diagonals use the
+        # full XY delta because their distribution axis is oblique in plan.
+        if abs(dx) > 1e-4 and abs(dy) > 1e-4:
+            vec = XYZ(center.X - origin.X, center.Y - origin.Y, 0.0)
+        elif abs(dx) >= abs(dy):
+            vec = XYZ(0.0, center.Y - origin.Y, 0.0)
+        else:
+            vec = XYZ(center.X - origin.X, 0.0, 0.0)
+
+        if vec.GetLength() < 1e-6:
+            return None
+        return vec
+    except Exception:
+        return None
 
 
 def place_bending_detail(doc, view, rebar_element, mark_value, detail_type, bar_index=0, move_vector=None):
@@ -195,7 +477,8 @@ def place_bending_detail(doc, view, rebar_element, mark_value, detail_type, bar_
         except Exception:
             pass
 
-        # Tag position = Top (0); tag alignment = View (0).
+        # Tag position = Top (0); tag alignment = Rebar Shape Family (0), so
+        # labels follow the detail instead of floating independently in view.
         try:
             p_tag_pos = detail.LookupParameter('Tag Position')
             if p_tag_pos is not None and not p_tag_pos.IsReadOnly:
@@ -205,7 +488,7 @@ def place_bending_detail(doc, view, rebar_element, mark_value, detail_type, bar_
         try:
             p_tag_align = detail.LookupParameter('Tag Alignment')
             if p_tag_align is not None and not p_tag_align.IsReadOnly:
-                p_tag_align.Set(1)   # 1 = View (0 = Rebar Shape Family)
+                p_tag_align.Set(0)   # 0 = Rebar Shape Family
         except Exception:
             pass
 
@@ -392,6 +675,17 @@ def _rebar_qty(bar):
     return 1
 
 
+def _rebar_qty(bar):
+    """Return the number of bars in a rebar element (1 for individual bars)."""
+    try:
+        p = bar.get_Parameter(BuiltInParameter.REBAR_ELEM_QUANTITY_OF_BARS)
+        if p is not None:
+            return int(p.AsInteger())
+    except Exception:
+        pass
+    return 1
+
+
 def _annotate_one_set(doc, view, bar, mark_value, detail_type, dist_axis, outer_r,
                       filled_region_type=None):
     """Place bending detail + extension line + circle for one rebar set element.
@@ -453,7 +747,12 @@ def place_all_details(doc, views_dict, tag_family_symbol):
 
     # ONE doc-scoped collector for all rebar, grouped by mark.
     t_collect = time.time()
-    wanted_marks = set(views_dict.keys())
+    wanted_marks = set()
+    for mark_key in views_dict.keys():
+        if mark_key == VOID_ADD_MARK_KEY:
+            wanted_marks.add(VOID_ADD_MARK_VALUE)
+        else:
+            wanted_marks.add(mark_key)
     bars_by_mark = {}
     total_rebar_scanned = 0
     for rb in FilteredElementCollector(doc).OfClass(Rebar):
@@ -472,10 +771,45 @@ def place_all_details(doc, views_dict, tag_family_symbol):
         t_mark = time.time()
         print('[detail_placer] --- mark: {!r} ---'.format(mark_value))
 
-        all_bars = bars_by_mark.get(mark_value, [])
+        lookup_mark = VOID_ADD_MARK_VALUE if mark_value == VOID_ADD_MARK_KEY else mark_value
+        all_bars = bars_by_mark.get(lookup_mark, [])
         if not all_bars:
             print('[detail_placer]   No rebar — skipping.')
             skipped.append(mark_value)
+            continue
+
+        if mark_value == VOID_ADD_MARK_KEY:
+            bars_for_detail = sorted(
+                _dedupe_void_keep_top(all_bars),
+                key=_void_detail_sort_key
+            )
+            print('[detail_placer]   void bars={} top_detail_sets={}'.format(
+                len(all_bars), len(bars_for_detail)))
+
+            tagged_type = _get_rebar_bending_detail_type_by_name(
+                doc, 'Bending Detail for void'
+            ) or detail_type
+            if tagged_type is detail_type:
+                _names = _list_rebar_bending_detail_type_names(doc)
+                if _names:
+                    print('[detail_placer] available bending detail types: {}'.format(', '.join(_names)))
+
+            total_attempted = total_details = total_failed = 0
+            for bar in bars_for_detail:
+                total_attempted += 1
+                move_vec = _void_detail_center_move_vector(bar)
+                bd = place_bending_detail(
+                    doc, view, bar, lookup_mark, tagged_type,
+                    bar_index=0, move_vector=move_vec
+                )
+                if bd is not None:
+                    total_details += 1
+                else:
+                    total_failed += 1
+
+            print('[detail_placer]   independent tag: skipped for void view')
+            print('[detail_placer]   mark total {:.2f}s  attempted={} details={} dims=0 donuts=0 failed={}'.format(
+                time.time() - t_mark, total_attempted, total_details, total_failed))
             continue
 
         dist_axis  = 'Y' if mark_value in X_MARKS else 'X'

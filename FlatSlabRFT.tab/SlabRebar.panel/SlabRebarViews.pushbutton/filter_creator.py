@@ -13,6 +13,9 @@ from Autodesk.Revit.DB import (
     OverrideGraphicSettings
 )
 
+VOID_ADD_MARK_KEY = '__VOID_ADD__'
+VOID_MARK_VALUE = 'Void Add RFT'
+
 
 def _rebar_category_list():
     cat_ids = List[ElementId]()
@@ -24,7 +27,26 @@ def _filter_name(mark_value):
     return 'SlabRFT_{}'.format(mark_value.replace(' ', '_'))
 
 
-def _get_or_create_filter(doc, filter_name, mark_value, match, existing_filters=None):
+def _make_rule(param_id, value, match, contains=False):
+    if contains:
+        if match:
+            return ParameterFilterRuleFactory.CreateContainsRule(
+                param_id, value, False
+            )
+        return ParameterFilterRuleFactory.CreateNotContainsRule(
+            param_id, value, False
+        )
+    if match:
+        return ParameterFilterRuleFactory.CreateEqualsRule(
+            param_id, value, False
+        )
+    return ParameterFilterRuleFactory.CreateNotEqualsRule(
+        param_id, value, False
+    )
+
+
+def _get_or_create_filter(doc, filter_name, mark_value, match, existing_filters=None,
+                          param_id=None, contains=False):
     """Return existing filter with filter_name or create a new one.
 
     match=True  → Mark equals mark_value
@@ -41,15 +63,9 @@ def _get_or_create_filter(doc, filter_name, mark_value, match, existing_filters=
         if f.Name == filter_name:
             return f
 
-    param_id = ElementId(BuiltInParameter.ALL_MODEL_MARK)
-    if match:
-        rule = ParameterFilterRuleFactory.CreateEqualsRule(
-            param_id, mark_value, False
-        )
-    else:
-        rule = ParameterFilterRuleFactory.CreateNotEqualsRule(
-            param_id, mark_value, False
-        )
+    if param_id is None:
+        param_id = ElementId(BuiltInParameter.ALL_MODEL_MARK)
+    rule = _make_rule(param_id, mark_value, match, contains=contains)
 
     element_filter = ElementParameterFilter(rule)
     new_filter = ParameterFilterElement.Create(
@@ -62,14 +78,23 @@ def _get_or_create_filter(doc, filter_name, mark_value, match, existing_filters=
 
 def create_mark_filter(doc, mark_value, view, existing_filters=None):
     """Apply two filters to view: show matching rebar, hide all other rebar."""
+    param_id = ElementId(BuiltInParameter.ALL_MODEL_MARK)
+    contains = False
+    filter_value = mark_value
+    if mark_value == VOID_ADD_MARK_KEY:
+        param_id = ElementId(BuiltInParameter.ALL_MODEL_MARK)
+        contains = False
+        filter_value = VOID_MARK_VALUE
 
     # Filter 1: show bars matching this mark
     show_filter = _get_or_create_filter(
         doc,
         _filter_name(mark_value) + '_show',
-        mark_value,
+        filter_value,
         match=True,
         existing_filters=existing_filters,
+        param_id=param_id,
+        contains=contains,
     )
     if show_filter.Id not in view.GetFilters():
         view.AddFilter(show_filter.Id)
@@ -79,9 +104,11 @@ def create_mark_filter(doc, mark_value, view, existing_filters=None):
     hide_filter = _get_or_create_filter(
         doc,
         _filter_name(mark_value) + '_hide',
-        mark_value,
+        filter_value,
         match=False,
         existing_filters=existing_filters,
+        param_id=param_id,
+        contains=contains,
     )
     if hide_filter.Id not in view.GetFilters():
         view.AddFilter(hide_filter.Id)
